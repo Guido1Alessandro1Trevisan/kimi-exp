@@ -1,87 +1,51 @@
+import re
 from safetensors import safe_open
 import os
-from tabulate import tabulate
-
-from safetensors import safe_open
-
-def compute_compressed_params(f, base):
-    # use get_tensor instead of f[...] !!
-    wshape = f.get_tensor(base + "weight_shape")
-    M, N = wshape.tolist()
-    return M * N
+from glob import glob
 
 
-def analyze_attention_experts(full_path):
-    attn_params = 0
-    expert_params = 0
-    other_params = 0
-    rows = []
+def canonical_name(key: str) -> str:
+    """
+    Normalize tensor names while preserving real architectural structure.
+    """
 
-    with safe_open(full_path, framework="pt") as f:
-        keys = list(f.keys())
+    # Remove low-level suffixes
+    key = re.sub(r"\.(weight|weight_packed|weight_scale|weight_shape|bias)$", "", key)
 
-        for k in keys:
+    # Collapse expert index → experts.*
+    key = re.sub(r"experts\.\d+", "experts.*", key)
 
-            # -----------------------------
-            # Case 1 — INT4 compressed weights
-            # -----------------------------
-            if k.endswith("weight_packed"):
-                base = k[:-len("weight_packed")]
+    # Collapse layer index → layers.*
+    key = re.sub(r"layers\.\d+", "layers.*", key)
 
-                params = compute_compressed_params(f, base)
+    return key
 
-                if ".self_attn." in base:
-                    group = "self_attn"
-                    attn_params += params
-                elif ".mlp.experts." in base:
-                    group = "experts"
-                    expert_params += params
-                else:
-                    group = "other"
-                    other_params += params
 
-                rows.append([base, group, params])
-                continue
+def extract_unique_param_families(folder):
+    unique = set()
 
-            # -----------------------------
-            # Case 2 — FP16/BF16/FP32 raw weights
-            # -----------------------------
-            if k.endswith("weight") and not (
-                "weight_scale" in k or "weight_shape" in k
-            ):
-                t = f.get_tensor(k)
-                params = t.numel()
+    # Load ALL shards (1–62)
+    files = sorted(glob(os.path.join(folder, "*.safetensors")))
 
-                if ".self_attn." in k:
-                    group = "self_attn"
-                    attn_params += params
-                elif ".mlp.experts." in k:
-                    group = "experts"
-                    expert_params += params
-                else:
-                    group = "other"
-                    other_params += params
+    for fp in files:
+        with safe_open(fp, framework="pt") as f:
+            for k in f.keys():
+                name = canonical_name(k)
+                unique.add(name)
 
-                rows.append([k, group, params])
-                continue
-
-    return rows, attn_params, expert_params, other_params
-
+    return sorted(unique)
 
 
 # ====================
 # RUN IT
 # ====================
-path = "/workspace/.cache/huggingface/hub/models--moonshotai--Kimi-K2-Thinking/snapshots/612681931a8c906ddb349f8ad0f582cb552189cd"
-file = "model-00062-of-000062.safetensors"
-full_path = os.path.join(path, file)
 
-rows, attn, experts, other = analyze_attention_experts(full_path)
+folder = "/workspace/.cache/huggingface/hub/models--moonshotai--Kimi-K2-Thinking/snapshots/612681931a8c906ddb349f8ad0f582cb552189cd"
 
-print(tabulate(rows, headers=["Tensor", "Group", "Params"], tablefmt="github"))
+unique_names = extract_unique_param_families(folder)
 
-print("\nSUMMARY")
-print("Self-attention params:", attn)
-print("Expert params:       ", experts)
-print("Other params:        ", other)
-print("TOTAL params:        ", attn + experts + other)
+print("\n=== UNIQUE PARAMETER FAMILIES ===")
+for u in unique_names:
+    print(u)
+
+print("\nTOTAL UNIQUE PARAM GROUPS:", len(unique_names))

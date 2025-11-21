@@ -2,6 +2,7 @@ import re
 from safetensors import safe_open
 import os
 from glob import glob
+from collections import defaultdict
 
 
 def canonical_name(key: str) -> str:
@@ -21,19 +22,20 @@ def canonical_name(key: str) -> str:
     return key
 
 
-def extract_unique_param_families(folder):
-    unique = set()
+def extract_unique_param_families_with_shapes(folder):
+    families = defaultdict(set)
 
-    # Load ALL shards (1–62)
+    # Load ALL shards
     files = sorted(glob(os.path.join(folder, "*.safetensors")))
 
     for fp in files:
         with safe_open(fp, framework="pt") as f:
             for k in f.keys():
-                name = canonical_name(k)
-                unique.add(name)
+                canon = canonical_name(k)
+                shape = tuple(f.get_tensor(k).shape)
+                families[canon].add(shape)
 
-    return sorted(unique)
+    return families
 
 
 # ====================
@@ -42,10 +44,13 @@ def extract_unique_param_families(folder):
 
 folder = "/workspace/.cache/huggingface/hub/models--moonshotai--Kimi-K2-Thinking/snapshots/612681931a8c906ddb349f8ad0f582cb552189cd"
 
-unique_names = extract_unique_param_families(folder)
+families = extract_unique_param_families_with_shapes(folder)
 
-print("\n=== UNIQUE PARAMETER FAMILIES ===")
-for u in unique_names:
-    print(u)
+print("\n=== UNIQUE PARAMETER FAMILIES + SHAPES ===")
 
-print("\nTOTAL UNIQUE PARAM GROUPS:", len(unique_names))
+for name in sorted(families.keys()):
+    print(f"\n{name}")
+    for shape in sorted(families[name]):
+        print(f"    shape = {shape}")
+
+print("\nTOTAL UNIQUE PARAM GROUPS:", len(families))

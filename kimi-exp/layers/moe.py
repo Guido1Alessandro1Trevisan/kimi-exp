@@ -28,10 +28,7 @@ class Gate(nn.Module):
         self.n_routed_experts = config.n_routed_experts
         self.routed_scaling_factor = config.routed_scaling_factor
 
-        self.gating_dim = config.hidden_size
-        self.weight = nn.Parameter(
-            torch.empty(self.n_routed_experts, self.gating_dim)
-        )
+        self.weight = nn.Linear(config.hidden_size, self.n_routed_experts, bias=False)
 
         self.e_score_correction_bias = nn.Parameter(
             torch.empty(self.n_routed_experts)
@@ -40,14 +37,18 @@ class Gate(nn.Module):
     def forward(self, x: torch.Tensor):
         _, _, hidden_size = x.shape
 
-        # Device-limited routing
+        # Device limited routing
         x_flat = x.view(-1, hidden_size)
-        logits = self.gate(x_flat)
+        logits = self.weight(x_flat)
         scores = torch.sigmoid(logits)
-        scores_for_choice = scores + self.e_score_correction_bias.unsqueeze(0)
-        topk_weight, topk_idx = scores_for_choice.topk(self.num_experts_per_tok, dim=-1)
 
-        # Normalize and apply router scaling factor
+        # Scores for choice vs Actual gate weights
+        scores_for_choice = scores + self.e_score_correction_bias.unsqueeze(0)
+        _, topk_idx = scores_for_choice.topk(self.top_k, dim=-1)
+        topk_weight = scores.gather(1, topk_idx)
+
+
+        # Normalize and apply router scaling factor, assume top_k is always one
         denominator = topk_weight.sum(dim=-1, keepdim=True) + 1e-20
         topk_weight = topk_weight / denominator
         topk_weight = topk_weight * self.routed_scaling_factor
@@ -60,12 +61,12 @@ class KimiMoE(nn.Module):
     def __init__(self, config: Config):
         super().__init__()
         self.hidden_size = config.hidden_size
-        self.world_size = dist.get_world_size()
-        self.ep_rank = dist.get_rank()
+        self.world_size = dist.get_world_size() if dist.is_initialized() else 1
+        self.ep_rank = dist.get_rank() if dist.is_initialized() else 0
         assert config.n_routed_experts % self.world_size == 0, f"Number of experts must be divisible by world size"
         self.n_local_experts = config.n_routed_experts // self.world_size
+        self.ep_size = self.world_size
         self.num_experts_per_tok = config.num_experts_per_tok
-        self.routed_scaling_factor = config.routed_scaling_factor
 
         self.expert_start_idx = self.ep_rank * self.n_local_experts
         self.experts_end_idx = (self.ep_rank + 1) * self.n_local_experts
@@ -74,40 +75,44 @@ class KimiMoE(nn.Module):
         self.experts = nn.ModuleList(
             [
                 MLP(self.hidden_size, config.moe_intermediate_size)
-                if self.expert_start_idx <= i <= self.experts_end_idx
+                if self.expert_start_idx <= i < self.experts_end_idx
                 else None
                 for i in range(config.n_routed_experts)
             ]
         )
-        self.aux_loss = 0.0
 
         # Shared experts is just a dense network
         if config.n_shared_experts is not None:
             intermediate_size = config.n_shared_experts * config.moe_intermediate_size
             self.shared_experts = MLP(
-                config=config, intermediate_size=intermediate_size
+                self.hidden_size, intermediate_size
             )
 
     def forward(self, x: torch.Tensor):
         # Shared Experts process all tokens
         batch_size, seq_len, hidden_size = x.shape
 
+        # Always have 1 shared expert
         shared_out = self.shared_experts(x)
-        topk_idx, topk_weight = self.compute_gate(x)
+
         x_flat = x.reshape(batch_size * seq_len, -1)
 
+        topk_idx, topk_weight = self.gate(x)
+        topk_idx = topk_idx.view(batch_size * seq_len, self.num_experts_per_tok)
+        topk_weight = topk_weight.view(batch_size * seq_len, self.num_experts_per_tok)
 
         routed_flat = torch.zeros_like(x_flat)
         for expert_id, expert in enumerate(self.experts):
-            # Not in this rank
+            # Expert doesn't live in this rank
             if expert is None:
                 continue
-            
+                
             mask = (topk_idx == expert_id)
             if not mask.any():
                 continue
 
             token_idx, slot_idx = mask.nonzero(as_tuple=True)
+
             expert_in = x_flat[token_idx]
             expert_out = expert(expert_in)
             gates = topk_weight[token_idx, slot_idx]
@@ -117,6 +122,10 @@ class KimiMoE(nn.Module):
                 token_idx,
                 expert_out * gates.unsqueeze(-1),
             )
+        
+        # Gather
+        if self.world_size > 1:
+            dist.all_reduce(routed_flat, op=dist.ReduceOp.SUM)
 
         routed = routed_flat.view(batch_size, seq_len, hidden_size)
 

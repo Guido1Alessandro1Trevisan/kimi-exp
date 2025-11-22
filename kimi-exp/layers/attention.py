@@ -78,8 +78,8 @@ class MLA(nn.Module):
             bias=False
         )
 
-        self.rope = RotaryEmbeddings(self.q_rope_dim)
-        self.output = nn.Linear(self.v_head_dim * self.num_heads, self.hidden_size, bias=False)
+        self.rotary_emb = RotaryEmbeddings(self.q_rope_dim)
+        self.o_proj = nn.Linear(self.v_head_dim * self.num_heads, self.hidden_size, bias=False)
 
     def forward(self, h):
         
@@ -99,7 +99,7 @@ class MLA(nn.Module):
         k_nope, v = kv.split([self.q_nope_dim, self.v_head_dim], dim=-1)
         k_pe = k_pe.unsqueeze(1).expand(batch_size, self.num_heads, seq_len, self.k_pe_dim)
 
-        rotary_emb = self.rope(seq_len)
+        rotary_emb = self.rotary_emb(seq_len)
         cos = torch.cos(rotary_emb).view(1, 1, seq_len, -1)
         sin = torch.sin(rotary_emb).view(1, 1, seq_len, -1)
         q_pe = apply_rotary(q_pe, cos, sin)
@@ -114,5 +114,5 @@ class MLA(nn.Module):
         out = torch.einsum("bhqk,bhkd->bhqd", attn_weights, v)
 
         out = out.transpose(1, 2).contiguous().view(batch_size, seq_len, -1)
-        return self.output(out)
+        return self.o_proj(out)
 

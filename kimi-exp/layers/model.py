@@ -56,7 +56,7 @@ class TransformerBlock(nn.Module):
         super().__init__()
         self.input_layernorm = RMSNorm(config.hidden_size)
         self.post_attention_layernorm = RMSNorm(config.hidden_size)
-        self.attn = MLA(config)
+        self.self_attn = MLA(config)
         if layer_idx == 0:
             self.mlp = MLP(config.hidden_size, config.intermediate_size)
         else:
@@ -65,7 +65,7 @@ class TransformerBlock(nn.Module):
     def forward(self, x):
         residual = x
         x = self.input_layernorm(x)
-        x = self.attn(x)
+        x = self.self_attn(x)
         x = x + residual
 
         residual = x
@@ -78,4 +78,24 @@ class TransformerBlock(nn.Module):
 
 class KimiV2Thinking(nn.Module):
 
-    
+    def __init__(self, config: Config):
+        super().__init__()
+        self.embed_tokens = VocabParallelEmbedding(
+            config.vocab_size, config.hidden_size
+        )
+        self.layers = nn.ModuleList(
+            TransformerBlock(config, layer_idx)
+            for layer_idx in range(config.num_hidden_layers)
+        )
+        self.norm = RMSNorm(config.hidden_size)
+        self.lm_head = ParallelLMHead(
+            config.vocab_size, config.hidden_size
+        )
+
+    def forward(self, input_ids):
+
+        x = self.embed_tokens(input_ids)
+        for layer in self.layers:
+            x = layer(x)
+        x = self.norm(x)
+        return x

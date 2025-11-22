@@ -21,7 +21,7 @@ class VocabParallelEmbedding(nn.Module):
         self.num_embeddings_per_partition = self.num_embeddings // self.tp_size
         self.vocab_start_idx = self.tp_rank * self.num_embeddings_per_partition
         self.vocab_end_idx = (self.tp_rank + 1) * self.num_embeddings_per_partition
-        self.weight = nn.Parameter(torch.zeros(self.num_embeddings_per_partition, embedding_dim), bias=False)
+        self.weight = nn.Parameter(torch.zeros(self.num_embeddings_per_partition, embedding_dim))
         self.weight.weight_loader = self.weight_loader
 
     def weight_loader(self, params: nn.Parameter, loaded_weight: torch.Tensor):
@@ -34,7 +34,7 @@ class VocabParallelEmbedding(nn.Module):
     def forward(self, x):
 
         if self.tp_size > 1:
-            mask = (x >= self.vocab_start_idx) & (x < self.vocab_end_idx)
+            mask = (x < self.vocab_start_idx) & (x >= self.vocab_end_idx)
             x = x - self.vocab_start_idx
             x[mask] = 0
         y = F.embedding(x, self.weight)

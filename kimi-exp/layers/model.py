@@ -25,6 +25,7 @@ class Config:
         self.max_position_embeddings = 262144
         self.rope_theta = 50000.0
         self.rms_norm_eps = 1e-5
+        self.rope_scaling_factor = 64.0
 
         # Moe
         self.intermediate_size = 18432 # MLP layer
@@ -33,7 +34,7 @@ class Config:
         self.num_experts_per_tok = 8        
         self.moe_intermediate_size = 2048     
         self.moe_layer_freq = 1   
-        self.routed_scaling_factor = 2.827,           
+        self.routed_scaling_factor = 2.827         
 
         # Depth
         self.num_hidden_layers = 61
@@ -84,7 +85,7 @@ class KimiV2Thinking(nn.Module):
             config.vocab_size, config.hidden_size
         )
         self.layers = nn.ModuleList(
-            TransformerBlock(config, layer_idx)
+            TransformerBlock(layer_idx)
             for layer_idx in range(config.num_hidden_layers)
         )
         self.norm = RMSNorm(config.hidden_size)
@@ -98,4 +99,5 @@ class KimiV2Thinking(nn.Module):
         for layer in self.layers:
             x = layer(x)
         x = self.norm(x)
-        return x
+        logits = self.lm_head(x)
+        return logits

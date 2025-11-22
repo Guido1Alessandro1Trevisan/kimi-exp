@@ -14,8 +14,8 @@ class VocabParallelEmbedding(nn.Module):
         embedding_dim: int,
     ):
         super().__init__()
-        self.tp_rank = dist.get_rank()
-        self.tp_size = dist.get_world_size()
+        self.tp_rank = dist.get_rank() if dist.is_initialized() else 0
+        self.tp_size = dist.get_world_size()  if dist.is_initialized() else 1
         assert num_embedding % self.tp_size == 0, "Embeddings must be divisible by the tp size"
         self.num_embeddings = num_embedding
         self.num_embeddings_per_partition = self.num_embeddings // self.tp_size
@@ -40,7 +40,7 @@ class VocabParallelEmbedding(nn.Module):
         y = F.embedding(x, self.weight)
         if self.tp_size > 1:
             y[mask] = 0
-            y = dist.all_reduce(y)
+            dist.all_reduce(y)
         return y
 
 

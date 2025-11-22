@@ -13,12 +13,12 @@ class RotaryEmbeddings(nn.Module):
     Caller takes cos/sin and broadcasts.
     """
 
-    def __init__(self, dim, base=10000.0, scale=40.0):
+    def __init__(self, dim, config: Config):
         super().__init__()
         assert dim % 2 == 0, "Dimension must be even for rotary embeddings"
         self.dim = dim
-        self.base = base
-        self.scale = scale
+        self.base = config.rope_theta
+        self.scale = config.rope_scaling_factor
         inv_freq = 1.0 / (self.base ** (torch.arange(0, dim, 2).float() / dim))
         self.register_buffer("inv_freq", inv_freq)
 
@@ -78,7 +78,7 @@ class MLA(nn.Module):
             bias=False
         )
 
-        self.rotary_emb = RotaryEmbeddings(self.q_rope_dim)
+        self.rotary_emb = RotaryEmbeddings(self.q_rope_dim, config)
         self.o_proj = nn.Linear(self.v_head_dim * self.num_heads, self.hidden_size, bias=False)
 
     def forward(self, h):
@@ -110,6 +110,8 @@ class MLA(nn.Module):
 
         scale = 1.0 / math.sqrt(self.q_head_dim)
         attn = torch.einsum("bhqd,bhkd->bhqk", q, k) * scale
+        mask = torch.triu(attn.new_full((seq_len, seq_len), -float("inf")), diagonal=1)
+        attn = attn + mask
         attn_weights = torch.softmax(attn, dim=-1)
         out = torch.einsum("bhqk,bhkd->bhqd", attn_weights, v)
 
